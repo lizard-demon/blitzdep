@@ -1,5 +1,5 @@
 # BlitzDep: Absurdly Fast Dependency Analysis
- 
+
 BlitzDep is a single-file, dependency-free Zig module for lightning-fast topological sorting. It's designed for scenarios where performance is critical, such as in build systems, package managers, or any application requiring efficient dependency resolution.
 
 The core of BlitzDep is a compact, highly-optimized Directed Acyclic Graph (DAG) implementation that can resolve dependency order for millions of items in milliseconds at both runtime or compiletime.
