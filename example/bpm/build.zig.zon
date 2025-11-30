@@ -1,0 +1,14 @@
+.{
+    .name = .bpm,
+    .version = "0.1.0",
+    .fingerprint = 0xa82ea24fbc6bfbeb,
+    .dependencies = .{
+        // Import the local blitzdep library from the project root (two levels up)
+        .blitzdep = .{ .path = "../../" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
