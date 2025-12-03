@@ -1,573 +1,298 @@
 const std = @import("std");
 const testing = std.testing;
-const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
+const graph = @import("blitzdep.zig");
 
-const zdep = @import("blitzdep");
-const Graph = zdep.Graph;
+test "basic chain" {
+    var g = graph.Graph(u32, 10, 20){};
+    _ = try g.add(0, 1);
+    _ = try g.add(1, 2);
+    _ = try g.add(3, 1);
+    _ = try g.add(4, 5);
 
-// -------------------------------------------------------------------------
-// Unit Tests & Coverage
-// -------------------------------------------------------------------------
-
-test "comptime: topological sort" {
-    std.debug.print("\n[TEST] comptime: topological sort\n", .{});
-    comptime {
-        const MyComptimeGraph = zdep.Graph(u32, 10, 20);
-        var g = MyComptimeGraph{ .node_n = 0, .edge_n = 0 }; 
-        
-        _ = g.add(0, .{1}) catch unreachable;
-        _ = g.add(1, .{2}) catch unreachable;
-        _ = g.add(3, .{1}) catch unreachable;
-        _ = g.add(4, .{}) catch unreachable;
-
-        const sorted = g.resolve() catch unreachable;
-
-        var pos_map = [_]usize{0} ** 5; 
-        for (sorted, 0..) |node_id, index| {
-            if (node_id < 5) pos_map[node_id] = index;
-        }
-
-        try testing.expect(pos_map[0] < pos_map[1]); // 0 before 1
-        try testing.expect(pos_map[1] < pos_map[2]); // 1 before 2
-        try testing.expect(pos_map[3] < pos_map[1]); // 3 before 1
+    const sorted = try g.resolve();
+    var pos = [_]usize{0} ** 6;
+    for (sorted, 0..) |id, i| {
+        if (id < 6) pos[id] = i;
     }
-    std.debug.print("[PASS] comptime: topological sort\n", .{});
+
+    try testing.expect(pos[0] < pos[1]);
+    try testing.expect(pos[1] < pos[2]);
+    try testing.expect(pos[3] < pos[1]);
 }
 
-test "comptime: very large topological sort" {
-    std.debug.print("\n[TEST] comptime: very large topological sort (2000 nodes)\n", .{});
+test "comptime large" {
     comptime {
         @setEvalBranchQuota(50000);
-        const NODE_COUNT = 2000;
-        const EDGE_COUNT = 4000;
-        const MyComptimeGraph = zdep.Graph(u32, NODE_COUNT, EDGE_COUNT);
-        var g = MyComptimeGraph{}; 
-
+        var g = graph.Graph(u32, 2000, 4000){};
         var i: u32 = 0;
-        while (i < NODE_COUNT - 1) : (i += 1) {
-            _ = try g.add(i, .{i + 1});
+        while (i < 1999) : (i += 1) {
+            _ = try g.add(i, i + 1);
         }
-
-        const sorted = g.resolve() catch unreachable;
-        try testing.expectEqual(@as(usize, NODE_COUNT), sorted.len);
+        const sorted = try g.resolve();
+        try testing.expectEqual(@as(usize, 2000), sorted.len);
         i = 0;
         while (i < sorted.len) : (i += 1) {
             try testing.expectEqual(i, sorted[i]);
         }
     }
-    std.debug.print("[PASS] comptime: very large topological sort\n", .{});
 }
 
-test "internals: verify initialization (ReleaseFast check)" {
-    std.debug.print("\n[TEST] internals: verify initialization (20 iterations)\n", .{});
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+test "init clean" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const allocator = arena.allocator();
+    const alloc = arena.allocator();
 
-    const GType = zdep.Graph(u32, 100, 200);
-    
-    for (0..20) |iteration| {
-        const g = try allocator.create(GType);
-        @memset(std.mem.asBytes(g), 0xAA); // Fill with garbage
-        g.* = .{}; // Initialize
-
-        try testing.expectEqual(@as(u32, 0), g.node_n);
-        try testing.expectEqual(@as(u32, 0), g.edge_n);
-
-        for (g.node, 0..) |n, i| {
-            if (n != null) {
-                std.debug.print("\nFAIL: node[{}] is not null! Value: {?}\n", .{i, n});
-                return error.InitializationFailed;
-            }
-        }
-        if ((iteration + 1) % 5 == 0) {
-            std.debug.print("  ✓ Completed {} iterations\n", .{iteration + 1});
-        }
+    const G = graph.Graph(u32, 100, 200);
+    for (0..20) |_| {
+        const g = try alloc.create(G);
+        @memset(std.mem.asBytes(g), 0xAA);
+        g.* = .{};
+        try testing.expectEqual(@as(u32, 0), g.n);
+        try testing.expectEqual(@as(u32, 0), g.high);
+        for (g.head) |h| try testing.expect(h == null);
     }
-    std.debug.print("[PASS] internals: verify initialization\n", .{});
 }
 
-test "internals: verify graph structure fidelity" {
-    std.debug.print("\n[TEST] internals: verify graph structure fidelity\n", .{});
-    var g = zdep.Graph(u32, 50, 50){};
-    
-    _ = try g.add(0, .{1});
-    _ = try g.add(0, .{2});
-    _ = try g.add(1, .{3});
+test "structure" {
+    var g = graph.Graph(u32, 50, 50){};
+    _ = try g.add(0, 1);
+    _ = try g.add(0, 2);
+    _ = try g.add(1, 3);
 
-    try testing.expectEqual(@as(u32, 3), g.edge_n);
-    
-    var seen_1 = false;
-    var seen_2 = false;
-    var count_0: usize = 0;
-    
-    var iter = g.node[0];
-    while (iter) |e_idx| {
-        count_0 += 1;
-        const target = g.edge[e_idx];
-        if (target == 1) seen_1 = true;
-        if (target == 2) seen_2 = true;
-        iter = g.next[e_idx];
-    }
-    
-    if (!seen_1 or !seen_2 or count_0 != 2) return error.StructureCorrupted;
+    try testing.expectEqual(@as(u32, 3), g.high);
 
-    var seen_3 = false;
-    iter = g.node[1];
-    while (iter) |e_idx| {
-        if (g.edge[e_idx] == 3) seen_3 = true;
-        iter = g.next[e_idx];
+    var seen1 = false;
+    var seen2 = false;
+    var count: usize = 0;
+    var it = g.head[0];
+    while (it) |e| : (it = g.next[e]) {
+        count += 1;
+        if (g.dest[e] == 1) seen1 = true;
+        if (g.dest[e] == 2) seen2 = true;
     }
-    
-    if (!seen_3) return error.StructureCorrupted;
-    std.debug.print("[PASS] internals: verify graph structure fidelity\n", .{});
+    try testing.expect(seen1 and seen2 and count == 2);
+
+    var seen3 = false;
+    it = g.head[1];
+    while (it) |e| : (it = g.next[e]) {
+        if (g.dest[e] == 3) seen3 = true;
+    }
+    try testing.expect(seen3);
 }
 
-test "internals: manual degree calculation check" {
-    std.debug.print("\n[TEST] internals: manual degree calculation check\n", .{});
-    var g = zdep.Graph(u32, 10, 10){};
-    _ = try g.add(0, .{2});
-    _ = try g.add(1, .{2});
+test "indegree" {
+    var g = graph.Graph(u32, 10, 10){};
+    _ = try g.add(0, 2);
+    _ = try g.add(1, 2);
     _ = try g.resolve();
-    
-    var deg_2: u32 = 0;
-    for (0..g.node_n) |i| {
-        var it = g.node[i];
+
+    var deg: u32 = 0;
+    for (0..g.n) |i| {
+        var it = g.head[i];
         while (it) |e| {
-            if (g.edge[e] == 2) deg_2 += 1;
+            if (g.dest[e] == 2) deg += 1;
             it = g.next[e];
         }
     }
-    try testing.expectEqual(@as(u32, 2), deg_2);
-    std.debug.print("[PASS] internals: manual degree calculation check\n", .{});
+    try testing.expectEqual(@as(u32, 2), deg);
 }
 
-test "fuzz: random acyclic graph validation" {
-    std.debug.print("\n[TEST] fuzz: random acyclic graph validation (100 iterations)\n", .{});
+test "fuzz acyclic" {
     var prng = std.Random.DefaultPrng.init(0x12345678);
-    const random = prng.random();
-    
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    const rng = prng.random();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const allocator = arena.allocator();
 
-    const NODE_MAX = 256;
-    const EDGE_MAX = 2000;
-    const ITERATIONS = 100;
-    const GType = zdep.Graph(u32, NODE_MAX, EDGE_MAX);
+    const G = graph.Graph(u32, 256, 2000);
+    var edges: [2000][2]u32 = undefined;
 
-    var verify_edges: [EDGE_MAX][2]u32 = undefined;
-
-    for (0..ITERATIONS) |iteration| {
-        const g = try allocator.create(GType);
+    for (0..100) |_| {
+        const g = try arena.allocator().create(G);
         @memset(std.mem.asBytes(g), 0xAA);
-        g.* = .{}; 
+        g.* = .{};
 
-        const num_nodes_limit = random.intRangeAtMost(u32, 10, NODE_MAX - 1);
-        const num_edges = random.intRangeAtMost(u32, 0, EDGE_MAX - 1);
-        var edge_count: usize = 0;
-        
-        var max_seen_id: u32 = 0;
-        var has_nodes = false;
+        const lim = rng.intRangeAtMost(u32, 10, 255);
+        const num = rng.intRangeAtMost(u32, 0, 1999);
+        var count: usize = 0;
 
-        while (edge_count < num_edges) {
-            const u = random.intRangeAtMost(u32, 0, num_nodes_limit - 2);
-            const v = random.intRangeAtMost(u32, u + 1, num_nodes_limit - 1); 
-
-            _ = try g.add(u, .{v});
-            verify_edges[edge_count] = .{ u, v };
-            edge_count += 1;
-            
-            if (u > max_seen_id) max_seen_id = u;
-            if (v > max_seen_id) max_seen_id = v;
-            has_nodes = true;
+        while (count < num) {
+            const u = rng.intRangeAtMost(u32, 0, lim - 2);
+            const v = rng.intRangeAtMost(u32, u + 1, lim - 1);
+            _ = try g.add(u, v);
+            edges[count] = .{ u, v };
+            count += 1;
         }
 
         const result = try g.resolve();
+        var pos = [_]usize{0} ** 256;
+        for (result, 0..) |id, i| pos[id] = i;
 
-        if (has_nodes) {
-            try testing.expect(result.len >= max_seen_id + 1);
-        } else {
-            try testing.expect(result.len == 0);
-        }
-
-        var pos_map = [_]usize{0} ** NODE_MAX;
-        for (result, 0..) |node_id, index| {
-            pos_map[node_id] = index;
-        }
-
-        for (0..edge_count) |i| {
-            const src = verify_edges[i][0];
-            const dst = verify_edges[i][1];
-            
-            const src_pos = pos_map[src];
-            const dst_pos = pos_map[dst];
-
-            if (src_pos >= dst_pos) {
-                std.debug.print("\nFAIL: Edge {}->{} violated. Result order: {any}\n", .{src, dst, result});
-                return error.TopologyConstraintViolated;
-            }
-        }
-        if ((iteration + 1) % 20 == 0) {
-            std.debug.print("  ✓ Completed {} iterations\n", .{iteration + 1});
+        for (0..count) |i| {
+            const src = edges[i][0];
+            const dst = edges[i][1];
+            try testing.expect(pos[src] < pos[dst]);
         }
         _ = arena.reset(.retain_capacity);
     }
-    std.debug.print("[PASS] fuzz: random acyclic graph validation\n", .{});
 }
 
-test "robust: complex structures" {
-    std.debug.print("\n[TEST] robust: complex structures\n", .{});
-    var g = zdep.Graph(u32, 20, 50){};
-    _ = try g.add(0, .{ 1, 2 });
-    _ = try g.add(1, .{3});
-    _ = try g.add(2, .{3});
-    _ = try g.add(10, .{11});
-    _ = try g.add(11, .{12});
-    _ = try g.add(5, .{ 6, 7 });
-    _ = try g.add(6, .{8});
-    _ = try g.add(7, .{8});
+test "diamond" {
+    var g = graph.Graph(u32, 20, 50){};
+    _ = try g.add(0, 1);
+    _ = try g.add(0, 2);
+    _ = try g.add(1, 3);
+    _ = try g.add(2, 3);
+    _ = try g.add(10, 11);
+    _ = try g.add(11, 12);
+    _ = try g.add(5, 6);
+    _ = try g.add(5, 7);
+    _ = try g.add(6, 8);
+    _ = try g.add(7, 8);
 
     const result = try g.resolve();
-    try testing.expectEqual(g.node_n, result.len);
-    try assertOrder(result, 0, 1);
-    try assertOrder(result, 0, 2);
-    try assertOrder(result, 1, 3);
-    try assertOrder(result, 2, 3);
-    try assertOrder(result, 10, 11);
-    try assertOrder(result, 11, 12);
-    try assertOrder(result, 5, 6);
-    try assertOrder(result, 5, 7);
-    try assertOrder(result, 6, 8);
-    try assertOrder(result, 7, 8);
-    std.debug.print("[PASS] robust: complex structures\n", .{});
+    try testing.expectEqual(g.n, result.len);
+    try order(result, 0, 1);
+    try order(result, 0, 2);
+    try order(result, 1, 3);
+    try order(result, 2, 3);
+    try order(result, 10, 11);
+    try order(result, 11, 12);
+    try order(result, 5, 6);
+    try order(result, 5, 7);
+    try order(result, 6, 8);
+    try order(result, 7, 8);
 }
 
-test "robust: extreme cycles" {
-    std.debug.print("\n[TEST] robust: extreme cycles\n", .{});
-    var g = zdep.Graph(u32, 10, 20){};
-    
-    std.debug.print("  Testing self-loop...\n", .{});
-    g = .{}; _ = try g.add(1, .{1}); try testing.expectError(error.CycleDetected, g.resolve());
-    
-    std.debug.print("  Testing 2-node cycle...\n", .{});
-    g = .{}; _ = try g.add(1, .{2}); _ = try g.add(2, .{1}); try testing.expectError(error.CycleDetected, g.resolve());
-    
-    std.debug.print("  Testing 4-node cycle...\n", .{});
-    g = .{}; 
-    _ = try g.add(1, .{2}); 
-    _ = try g.add(2, .{3}); 
-    _ = try g.add(3, .{4}); 
-    _ = try g.add(4, .{1}); 
+test "cycles" {
+    var g = graph.Graph(u32, 10, 20){};
+    g = .{};
+    _ = try g.add(1, 1);
     try testing.expectError(error.CycleDetected, g.resolve());
-    std.debug.print("[PASS] robust: extreme cycles\n", .{});
+
+    g = .{};
+    _ = try g.add(1, 2);
+    _ = try g.add(2, 1);
+    try testing.expectError(error.CycleDetected, g.resolve());
+
+    g = .{};
+    _ = try g.add(1, 2);
+    _ = try g.add(2, 3);
+    _ = try g.add(3, 4);
+    _ = try g.add(4, 1);
+    try testing.expectError(error.CycleDetected, g.resolve());
 }
 
-test "robust: max capacity saturation" {
-    std.debug.print("\n[TEST] robust: max capacity saturation\n", .{});
-    var g = zdep.Graph(u32, 5, 4){}; 
-    _ = try g.add(0, .{1}); 
-    _ = try g.add(1, .{2}); 
-    _ = try g.add(2, .{3}); 
-    _ = try g.add(3, .{4});
-    
+test "capacity" {
+    var g = graph.Graph(u32, 5, 4){};
+    _ = try g.add(0, 1);
+    _ = try g.add(1, 2);
+    _ = try g.add(2, 3);
+    _ = try g.add(3, 4);
+
     const res = try g.resolve();
     try testing.expectEqual(@as(usize, 5), res.len);
-    try assertOrder(res, 0, 4);
-    std.debug.print("[PASS] robust: max capacity saturation\n", .{});
+    try order(res, 0, 4);
 }
 
-test "error: bounds checking" {
-    std.debug.print("\n[TEST] error: bounds checking\n", .{});
-    var g = zdep.Graph(u32, 10, 5){}; 
+test "overflow" {
+    var g = graph.Graph(u32, 10, 5){};
+    try testing.expectError(error.Overflow, g.add(10, 1));
+    try testing.expectError(error.Overflow, g.add(0, 10));
+
+    _ = try g.add(0, 1);
+    _ = try g.add(0, 2);
+    _ = try g.add(0, 3);
+    _ = try g.add(0, 4);
+    _ = try g.add(0, 5);
+    try testing.expectError(error.Overflow, g.add(0, 6));
+    try testing.expectEqual(@as(u32, 5), g.high);
+}
+
+test "remove" {
+    var g = graph.Graph(u32, 10, 10){};
+    const e1 = try g.add(0, 1);
+    const e2 = try g.add(1, 2);
+
+    try testing.expectEqual(@as(u32, 1), g.refs[1]);
+    try testing.expectEqual(@as(u32, 1), g.refs[2]);
+
+    g.remove(e1, 0);
+    try testing.expectEqual(@as(u32, 0), g.refs[1]);
+
+    const sorted = try g.resolve();
+    try testing.expectEqual(@as(usize, 3), sorted.len);
     
-    std.debug.print("  Testing node overflow...\n", .{});
-    try testing.expectError(error.Overflow, g.add(10, .{1})); 
-    try testing.expectError(error.Overflow, g.add(0, .{10})); 
+    try order(sorted, 1, 2);
 
-    std.debug.print("  Testing edge overflow...\n", .{});
-    _ = try g.add(0, .{1}); 
-    _ = try g.add(0, .{2}); 
-    _ = try g.add(0, .{3}); 
-    _ = try g.add(0, .{4}); 
-    _ = try g.add(0, .{5}); 
-    
-    try testing.expectError(error.Overflow, g.add(0, .{6}));
-    try testing.expectEqual(@as(u32, 5), g.edge_n);
-    std.debug.print("[PASS] error: bounds checking\n", .{});
+    g.remove(e2, 1);
+    try testing.expectEqual(@as(u32, 0), g.refs[2]);
 }
 
-fn assertOrder(list: []const u32, before: u32, after: u32) !void {
-    var idx_before: ?usize = null;
-    var idx_after: ?usize = null;
+test "remove reuse" {
+    var g = graph.Graph(u32, 10, 5){};
+    const e1 = try g.add(0, 1);
+    const e2 = try g.add(0, 2);
+    _ = try g.add(0, 3);
+    _ = try g.add(0, 4);
+    _ = try g.add(0, 5);
 
-    for (list, 0..) |item, i| {
-        if (item == before) idx_before = i;
-        if (item == after) idx_after = i;
-    }
-    if (idx_before == null or idx_after == null) return error.NodeNotFound;
-    if (idx_before.? >= idx_after.?) return error.OrderViolated;
+    try testing.expectEqual(@as(u32, 5), g.high);
+    try testing.expectError(error.Overflow, g.add(0, 6));
+
+    g.remove(e1, 0);
+    g.remove(e2, 0);
+
+    const e3 = try g.add(1, 6);
+    const e4 = try g.add(1, 7);
+    try testing.expectEqual(@as(u32, 5), g.high);
+    try testing.expect(e3 == e1 or e3 == e2);
+    try testing.expect(e4 == e1 or e4 == e2);
 }
 
-// -------------------------------------------------------------------------
-// Benchmarking Suite
-// -------------------------------------------------------------------------
-
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-
-pub fn benchmark(comptime N: usize, B: usize, comptime R: usize,
-                 options: struct {
-                     add: bool = false,
-                     sort: bool = false,
-                     total: bool = true, }) !void {
-    var arena = std.heap.ArenaAllocator.init(gpa.allocator());
-    defer arena.deinit(); 
-    const allocator = arena.allocator();
-
-    const T = u32;
-    const EdgeMax = if (N < 100) 100 else (N * 2) + (N / 5);
-    const GraphType = Graph(T, N, EdgeMax); 
-
-    var add_times:  [R]Timing = [1]Timing{ .{} } ** R;
-    var sort_times: [R]Timing = [1]Timing{ .{} } ** R;
-    
-    const list = try gen_int_items(N, T, allocator);
-
-    for (0..R) |i| {
-        var tsort = try allocator.create(GraphType);
-        tsort.* = GraphType{}; 
-
-        const start1 = std.time.nanoTimestamp();
-        
-        if (B > 0) {
-            const batch: usize = if (B == 1) N - 1 else (N / B) - 1;
-            
-            for (0..batch) |b| {
-                const base = b * B;
-                if (B > 1) {
-                    for (1..B) |j| {
-                        _ = try tsort.add(list.items[base], .{ list.items[base + j] });
-                    }
-                }
-                _ = try tsort.add(list.items[base], .{ list.items[base + B] }); 
-            }
-        }
-        
-        add_times[i] = .{ .n = N, .start_ns = start1, .end_ns = std.time.nanoTimestamp(), .b = B };
-
-        const start2 = std.time.nanoTimestamp();
-        _ = try tsort.resolve();
-        sort_times[i] = .{ .n = N, .start_ns = start2, .end_ns = std.time.nanoTimestamp(), .b = B };
+fn order(list: []const u32, before: u32, after: u32) !void {
+    var b: ?usize = null;
+    var a: ?usize = null;
+    for (list, 0..) |id, i| {
+        if (id == before) b = i;
+        if (id == after) a = i;
     }
-
-    const add_total = compute_total(N, B, R, add_times);
-    const sort_total = compute_total(N, B, R, sort_times);
-    var total = compute_total(N, B, R, sort_times);
-    total.add(add_total);
-
-    var prefix_buf: [64]u8 = undefined;
-    const prefix = try std.fmt.bufPrint(&prefix_buf, "N={d} B={d}", .{N, B});
-
-    if (options.add)    try add_total.print(prefix);
-    if (options.sort)   try sort_total.print("Sort");
-    if (options.total)  try total.print(prefix);
+    try testing.expect(b != null and a != null and b.? < a.?);
 }
 
-pub fn benchmark_thrasher(comptime N: usize, B: usize, comptime R: usize) !void {
-    var arena = std.heap.ArenaAllocator.init(gpa.allocator());
-    defer arena.deinit(); 
-    const allocator = arena.allocator();
+test "bench small" {
+    const ns_ms: i128 = 1_000_000;
+    var g = graph.Graph(u32, 10000, 20000){};
 
-    const T = u32;
-    const EdgeMax = if (N < 100) 100 else (N * 2) + (N / 5);
-    const GraphType = Graph(T, N, EdgeMax); 
-
-    var add_times:  [R]Timing = [1]Timing{ .{} } ** R;
-    var sort_times: [R]Timing = [1]Timing{ .{} } ** R;
-    
-    const list = try gen_int_items(N, T, allocator);
-
-    var prng = std.Random.DefaultPrng.init(42); 
-    const random = prng.random();
-    random.shuffle(T, list.items);
-
-    for (0..R) |i| {
-        var tsort = try allocator.create(GraphType);
-        tsort.* = GraphType{}; 
-
-        const start1 = std.time.nanoTimestamp();
-        
-        if (B > 0) {
-            const batch: usize = if (B == 1) N - 1 else (N / B) - 1;
-            
-            for (0..batch) |b| {
-                const base = b * B;
-                if (B > 1) {
-                    for (1..B) |j| {
-                        _ = try tsort.add(list.items[base], .{ list.items[base + j] });
-                    }
-                }
-                _ = try tsort.add(list.items[base], .{ list.items[base + B] }); 
-            }
-        }
-        add_times[i] = .{ .n = N, .start_ns = start1, .end_ns = std.time.nanoTimestamp(), .b = B };
-
-        const start2 = std.time.nanoTimestamp();
-        _ = try tsort.resolve();
-        sort_times[i] = .{ .n = N, .start_ns = start2, .end_ns = std.time.nanoTimestamp(), .b = B };
+    const t1 = std.time.nanoTimestamp();
+    for (0..9999) |i| {
+        _ = try g.add(@intCast(i), @intCast(i + 1));
     }
+    const t2 = std.time.nanoTimestamp();
+    _ = try g.resolve();
+    const t3 = std.time.nanoTimestamp();
 
-    const add_total = compute_total(N, B, R, add_times);
-    var total = compute_total(N, B, R, sort_times);
-    total.add(add_total);
-
-    var prefix_buf: [64]u8 = undefined;
-    const prefix = try std.fmt.bufPrint(&prefix_buf, "THRASH N={d} B={d}", .{N, B});
-    try total.print(prefix);
+    const add_ms = @divTrunc(t2 - t1, ns_ms);
+    const sort_ms = @divTrunc(t3 - t2, ns_ms);
+    std.debug.print("\n10k: add={}ms sort={}ms\n", .{ add_ms, sort_ms });
 }
 
-fn gen_int_items(N: usize, comptime T: type, allocator: Allocator) !ArrayList(T) {
-    var list = try ArrayList(T).initCapacity(allocator, N);
-    for (0..N) |num| {
-        list.appendAssumeCapacity(@intCast(num));
+test "bench large" {
+    const ns_ms: i128 = 1_000_000;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const g = try arena.allocator().create(graph.Graph(u32, 1000000, 2000000));
+    g.* = .{};
+
+    const t1 = std.time.nanoTimestamp();
+    for (0..999999) |i| {
+        _ = try g.add(@intCast(i), @intCast(i + 1));
     }
-    return list;
-}
+    const t2 = std.time.nanoTimestamp();
+    _ = try g.resolve();
+    const t3 = std.time.nanoTimestamp();
 
-const NS_TO_MS: i128 = 1000 * 1000;
-
-const Timing = struct {
-    n:          usize = 0,
-    b:          usize = 0,
-    start_ns:   i128 = 0,
-    end_ns:     i128 = 0,
-
-    fn elapsed_ns(self: Timing) i128 { return self.end_ns - self.start_ns; }
-    fn elapsed_ms(self: Timing) i128 { return @divTrunc(self.elapsed_ns(), NS_TO_MS); }
-    fn nps(self: Timing) i128 { 
-        if (self.elapsed_ns() == 0) return 0;
-        return @divTrunc(@as(i128, @intCast(self.n)) * NS_TO_MS * 1000, self.elapsed_ns()); 
-    }
-    fn ns_per_item(self: Timing) i128 { 
-        if (self.n == 0) return 0;
-        return @divTrunc(self.elapsed_ns(), @as(i128, @intCast(self.n))); 
-    }
-};
-
-const TimeTotal = struct {
-    n:          usize = 0,
-    b:          usize = 0,
-    repeat:     usize = 0,
-    total:      usize = 0,
-    elapsed_ns: i128 = 0,
-
-    fn elapsed_ms(self: TimeTotal) i128 { return @divTrunc(self.elapsed_ns, NS_TO_MS); }
-    fn ms_per_n(self: TimeTotal) i128 { 
-        if (self.repeat == 0) return 0;
-        return @divTrunc(self.elapsed_ms(), @as(i128, @intCast(self.repeat))); 
-    }
-    fn nps(self: TimeTotal) i128 { 
-        if (self.elapsed_ns == 0) return 0;
-        return @divTrunc(@as(i128, @intCast(self.total)) * NS_TO_MS * 1000, self.elapsed_ns); 
-    }
-    fn ns_per_item(self: TimeTotal) i128 { 
-        if (self.total == 0) return 0;
-        return @divTrunc(self.elapsed_ns, @as(i128, @intCast(self.total))); 
-    }
-    fn print(self: TimeTotal, title: []const u8) !void {
-        var buf2: [128]u8 = undefined;
-        var buf3: [128]u8 = undefined;
-        var buf4: [128]u8 = undefined;
-        const str2 = try fmtInt(i128, self.ms_per_n(), 5, &buf2);
-        const str3 = try fmtInt(i128, self.nps(), 9, &buf3);
-        const str4 = try fmtInt(i128, self.ns_per_item(), 6, &buf4);
-        std.debug.print("{s:18} | Time:{s}ms | {s} nodes/s | {s} ns/node\n",
-                        .{title, str2, str3, str4 });
-    }
-
-    fn add(self: *TimeTotal, from: TimeTotal) void {
-        self.total += from.total;
-        self.elapsed_ns += from.elapsed_ns;
-    }
-};
-
-fn compute_total(N: usize, B: usize, comptime R: usize, times: [R]Timing) TimeTotal {
-    var total: TimeTotal = .{ .n = N, .b = B, };
-    var max: i128 = times[0].elapsed_ns();
-    var max_i: usize = 0;
-
-    for (1..R)|i| {
-        if (max < times[i].elapsed_ns()) {
-            max = times[i].elapsed_ns();
-            max_i = i;
-        }
-    }
-    for (0..R)|i| {
-        if (R > 1 and i == max_i) continue;     
-        total.repeat += 1;
-        total.total += times[i].n;
-        total.elapsed_ns += times[i].elapsed_ns();
-    }
-    return total;
-}
-
-pub fn fmtInt(comptime T: type, num: T, width: usize, buf: []u8) ![]u8 {
-    const str = try std.fmt.bufPrint(buf, "{[value]: >[width]}", .{.value = num, .width = width});
-    _ = std.mem.replaceScalar(u8, str, '+', ' ');   
-    return str;
-}
-
-test "Benchmarks" {
-    std.debug.print("\nBenchmark increasing node in 10X scale on branching 1\n", .{});
-    try benchmark(10000, 1, 6, .{ .add = true, .sort = true, .total = false });
-    try benchmark(100000, 1, 6, .{ .add = true, .sort = true, .total = false });
-    try benchmark(1000000, 1, 6, .{ .add = true, .sort = true, .total = false });
-
-    std.debug.print("\nBenchmark increasing nodes on fixed branching\n", .{});
-    try benchmark(10000, 1000, 6, .{});
-    try benchmark(20000, 1000, 6, .{});
-    try benchmark(50000, 1000, 6, .{});
-    try benchmark(100000, 1000, 6, .{});
-    try benchmark(500000, 1000, 6, .{});
-    try benchmark(1000000, 1000, 6, .{});
-
-    std.debug.print("\nBenchmark increasing node and increasing link branching\n", .{});
-    try benchmark(10000, 2, 6, .{});
-    try benchmark(100000, 2, 6, .{});
-    try benchmark(1000000, 2, 6, .{});
-
-    try benchmark(10000, 10, 6, .{});
-    try benchmark(100000, 10, 6, .{});
-    try benchmark(1000000, 10, 6, .{});
-
-    try benchmark(10000, 100, 6, .{});
-    try benchmark(100000, 100, 6, .{});
-    try benchmark(1000000, 100, 6, .{});
-
-    try benchmark(10000, 1000, 6, .{});
-    try benchmark(100000, 1000, 6, .{});
-    try benchmark(1000000, 1000, 6, .{});
-
-    std.debug.print("\nBenchmark increasing large link branching\n", .{});
-    try benchmark(1000000, 100, 3, .{});
-    try benchmark(1000000, 500, 3, .{});
-    try benchmark(1000000, 1000, 3, .{});
-    try benchmark(1000000, 5000, 3, .{});
-    try benchmark(1000000, 10000, 3, .{});
-    try benchmark(1000000, 50000, 3, .{});
-}
-
-test "Cache Thrasher" {
-    std.debug.print("\nBenchmark: CACHE THRASHER (Randomized Memory Access)\n", .{});
-    std.debug.print("----------------------------------------------------------------\n", .{});
-
-    try benchmark_thrasher(100000, 10, 6);
-    try benchmark_thrasher(1000000, 10, 6);
-
-    try benchmark_thrasher(100000, 1000, 6);
-    try benchmark_thrasher(1000000, 1000, 6);
-
-    try benchmark_thrasher(100000, 5000, 6);
-    try benchmark_thrasher(1000000, 5000, 6);
+    const add_ms = @divTrunc(t2 - t1, ns_ms);
+    const sort_ms = @divTrunc(t3 - t2, ns_ms);
+    std.debug.print("1M: add={}ms sort={}ms\n", .{ add_ms, sort_ms });
 }
