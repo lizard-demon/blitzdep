@@ -95,3 +95,4 @@ pub fn Graph(comptime T: type, comptime max_nodes: u32, comptime max_edges: u32)
         }
     };
 }
+
