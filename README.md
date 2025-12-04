@@ -4,13 +4,14 @@ A single-file, zero-dependency Zig library for blazing-fast topological sorting 
 
 ## Why Blitzdep?
 
-- **Ridiculously Fast**: Resolve 1 million dependencies in ~20ms
-- **Compile-Time Ready**: Works at both runtime and compile-time
-- **Zero Dependencies**: Single file, no external dependencies
-- **Type-Safe**: Fully leverages Zig's compile-time guarantees
-- **Memory Efficient**: Fixed compile-time allocation for predictable performance
+- **Ridiculously Fast**: Resolve 1 million dependencies in ~20ms, with O(1) add/delete.
+- **Static Realtime Overhead**: Add or remove dependencies in nanoseconds.
+- **Compile-Time Ready**: Works at both runtime and compile-time.
+- **Zero Dependencies**: Single file, no external dependencies.
+- **Type-Safe**: Fully leverages Zig's compile-time guarantees.
+- **Memory Efficient**: Fixed compile-time allocation for predictable performance.
 
-Perfect for build systems, package managers, task schedulers, or any system requiring dependency ordering.
+Perfect for build systems, package managers, task schedulers, or any system requiring topological ordering.
 
 ## Quick Example
 
@@ -23,28 +24,36 @@ pub fn main() !void {
     const Graph = zdep.Graph(u32, 100, 200);
     var g = Graph{};
 
-    // Add dependencies (node -> dependencies)
-    _ = try g.add(2, .{1});        // 2 depends on 1
-    _ = try g.add(3, .{2});        // 3 depends on 2
-    _ = try g.add(4, .{1, 2});     // 4 depends on 1 and 2
+    // Add dependencies (node -> dependent)
+    _ = try g.add(2, 1);        // 2 depends on 1
+    _ = try g.add(3, 2);        // 3 depends on 2
+    _ = try g.add(4, 1);        // 4 depends on 1
+    const e = try g.add(4, 2);  // 4 depends on 2. Save the edge ID.
 
     // Resolve to topological order
-    const sorted = try g.resolve();
-    
-    // Result: [1, 2, 3, 4] (or valid topological ordering)
-    std.debug.print("Build order: {any}\n", .{sorted});
+    var sorted = try g.resolve();
+    std.debug.print("Build order: {any}\n", .{sorted}); // e.g. [1, 2, 3, 4]
+
+    // Remove a dependency and re-resolve
+    g.del(e, 4);
+    sorted = try g.resolve();
+    std.debug.print("New build order: {any}\n", .{sorted}); // e.g. [1, 3, 2, 4]
 }
 ```
 
 ## Performance
 
+The `resolve()` operation is O(N+E). Add/delete operations are O(1).
+
 Benchmarked on a 2017 Chromebook with `ReleaseFast`:
 
+**Resolve Performance**
 ```
 1M nodes, 1K deps each:    21ms  →  91M nodes/s  (10 ns/node)
 1M nodes, 10K deps each:   18ms  → 109M nodes/s  ( 9 ns/node)
 1M nodes, 50K deps each:   17ms  → 113M nodes/s  ( 8 ns/node)
 ```
+*(See `zig build test` for full performance breakdown of add/delete/sort)*
 
 ## Installation
 
@@ -74,17 +83,25 @@ const Graph = zdep.Graph(T, node_max, edge_max);
 var g = Graph{};
 ```
 
-- `T`: Node ID type (typically `u32`)
-- `node_max`: Maximum number of nodes
-- `edge_max`: Maximum number of edges
+- `T`: Node ID type (typically `u32` or `u16`).
+- `node_max`: Maximum number of nodes.
+- `edge_max`: Maximum number of edges (dependencies).
 
-### Adding Dependencies
+### Adding a Dependency
 
 ```zig
-_ = try g.add(node_id, .{ dep1, dep2, ... });
+const edge_id = try g.add(node_id, dependent_id);
 ```
 
-Returns `error.Overflow` if capacity exceeded.
+Adds a single dependency (`node_id` -> `dependent_id`). Returns a unique `edge_id` that can be used later for deletion. Returns `error.Overflow` if capacity is exceeded.
+
+### Deleting a Dependency
+
+```zig
+g.del(edge_id, node_id);
+```
+
+Removes a dependency using the `edge_id` returned by `add`. The `node_id` (the "from" node) must also be provided. This is an O(1) operation.
 
 ### Resolving Order
 
@@ -111,23 +128,20 @@ comptime {
 
 ## Testing
 
-```sh
-# Run correctness tests
-zig build test
+Run correctness tests and performance benchmarks:
 
-# Run performance benchmarks
-zig build perf -Doptimize=ReleaseFast
+```sh
+zig build test -Doptimize=ReleaseFast
 ```
 
 ## How It Works
 
-Blitzdep implements Kahn's algorithm for topological sorting with:
-- Adjacency list representation using fixed arrays
-- In-place queue for zero-indegree nodes
-- Single-pass cycle detection
-- Cache-friendly memory layout
+Blitzdep implements Kahn's algorithm for topological sorting. It uses a custom allocator and an adjacency list representation built on array-backed doubly-linked lists. This allows for O(1) add and delete operations.
 
-All memory is allocated at compile-time based on capacity parameters, eliminating runtime allocation overhead.
+- **Adjacency List**: Implemented with fixed arrays and indices, not pointers.
+- **Dynamic Edges**: A free list tracks empty edge slots, allowing for efficient reuse.
+- **Sorting**: An in-place queue tracks zero-indegree nodes.
+- **Memory**: All memory is allocated at compile-time, eliminating runtime allocation overhead.
 
 ## License
 
