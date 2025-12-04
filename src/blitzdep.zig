@@ -6,11 +6,14 @@ pub fn Graph(comptime T: type, comptime max_nodes: u32, comptime max_edges: u32)
     return struct {
         n: u32 = 0,
         head: [max_nodes]?u32 = [_]?u32{null} ** max_nodes,
+
         dest: [max_edges]u32 = undefined,
         next: [max_edges]?u32 = undefined,
         prev: [max_edges]?u32 = undefined,
+
         free: ?u32 = null,
         high: u32 = 0,
+
         refs: [max_nodes]u32 = [_]u32{0} ** max_nodes,
         work: [max_nodes]u32 = undefined,
         sort: [max_nodes]T = undefined,
