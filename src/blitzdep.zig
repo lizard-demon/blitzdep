@@ -30,11 +30,9 @@ pub fn Graph(comptime T: type, comptime max_nodes: u32, comptime max_edges: u32)
         pub fn add(self: *Self, node: T, dependent: T) !u32 {
             const u: u32 = @intCast(node);
             const v: u32 = @intCast(dependent);
-            if (u >= max_nodes or v >= max_nodes) return error.Overflow;
+            if (@max(u, v) >= max_nodes) return error.Overflow;
             
-            const max_id: u32 = @max(u, v);
-            const next_n: u32 = max_id + 1;
-            self.n = @max(self.n, next_n);
+            self.n = @max(self.n, @as(u32, @max(u, v)) + 1);
             const e = try self.alloc();
             
             self.dest[e] = v;
@@ -50,25 +48,25 @@ pub fn Graph(comptime T: type, comptime max_nodes: u32, comptime max_edges: u32)
 
         pub fn del(self: *Self, edge: u32, node: T) void {
             const u: u32 = @intCast(node);
-            const p = self.prev[edge];
-            const n = self.next[edge];
-
-            if (p) |prev| self.next[prev] = n else self.head[u] = n;
-            if (n) |nxt| self.prev[nxt] = p;
-            if (self.refs[self.dest[edge]] > 0) self.refs[self.dest[edge]] -= 1;
+            const v = self.dest[edge];
+            
+            if (self.prev[edge]) |p| {
+                self.next[p] = self.next[edge];
+            } else {
+                self.head[u] = self.next[edge];
+            }
+            
+            if (self.next[edge]) |n| self.prev[n] = self.prev[edge];
+            if (self.refs[v] > 0) self.refs[v] -= 1;
             
             self.next[edge] = self.free;
             self.free = edge;
-            self.dest[edge] = 0;
-            self.prev[edge] = null;
         }
 
         pub fn resolve(self: *Self) ![]const T {
             @memcpy(self.work[0..self.n], self.refs[0..self.n]);
             
-            var head: u32 = 0;
             var tail: u32 = 0;
-
             for (0..self.n) |i| {
                 if (self.work[i] == 0) {
                     self.sort[tail] = @intCast(i);
@@ -76,10 +74,9 @@ pub fn Graph(comptime T: type, comptime max_nodes: u32, comptime max_edges: u32)
                 }
             }
 
+            var head: u32 = 0;
             while (head < tail) : (head += 1) {
-                const u = self.sort[head];
-                var it = self.head[@intCast(u)];
-                
+                var it = self.head[@intCast(self.sort[head])];
                 while (it) |e| : (it = self.next[e]) {
                     const v = self.dest[e];
                     self.work[v] -= 1;
