@@ -1,7 +1,7 @@
 const std = @import("std");
 
 /// High-performance statically allocated DAG for reactive systems.
-/// O(1) add/remove via array-backed doubly-linked lists.
+/// O(1) add/del via array-backed doubly-linked lists.
 pub fn Graph(comptime T: type, comptime max_nodes: u32, comptime max_edges: u32) type {
     return struct {
         n: u32 = 0,
@@ -18,9 +18,9 @@ pub fn Graph(comptime T: type, comptime max_nodes: u32, comptime max_edges: u32)
         const Self = @This();
 
         fn alloc(self: *Self) !u32 {
-            if (self.free) |idx| {
-                self.free = self.next[idx];
-                return idx;
+            if (self.free) |e| {
+                self.free = self.next[e];
+                return e;
             }
             if (self.high >= max_edges) return error.Overflow;
             defer self.high += 1;
@@ -48,15 +48,14 @@ pub fn Graph(comptime T: type, comptime max_nodes: u32, comptime max_edges: u32)
             return e;
         }
 
-        pub fn remove(self: *Self, edge: u32, node: T) void {
+        pub fn del(self: *Self, edge: u32, node: T) void {
             const u: u32 = @intCast(node);
-            const v = self.dest[edge];
             const p = self.prev[edge];
             const n = self.next[edge];
 
             if (p) |prev| self.next[prev] = n else self.head[u] = n;
             if (n) |nxt| self.prev[nxt] = p;
-            if (self.refs[v] > 0) self.refs[v] -= 1;
+            if (self.refs[self.dest[edge]] > 0) self.refs[self.dest[edge]] -= 1;
             
             self.next[edge] = self.free;
             self.free = edge;
@@ -93,14 +92,6 @@ pub fn Graph(comptime T: type, comptime max_nodes: u32, comptime max_edges: u32)
             
             if (tail != self.n) return error.CycleDetected;
             return self.sort[0..self.n];
-        }
-
-        pub fn clear(self: *Self) void {
-            self.n = 0;
-            self.high = 0;
-            self.free = null;
-            @memset(self.head[0..], null);
-            @memset(self.refs[0..], 0);
         }
     };
 }
